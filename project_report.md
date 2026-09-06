@@ -59,7 +59,31 @@ All seven helper functions provided in `project_starter.py` are integrated into 
 
 ## 2. Evaluation Results & Performance Analysis
 
-*(Section to be finalized with quantitative summary upon test completion)*
+### 2.1 Test Evaluation Summary
+The multi-agent system was evaluated using the full test suite of 20 customer requests from `quote_requests_sample.csv`, covering small, medium, and large volume inquiries across a variety of customer roles (office managers, teachers, event planners, city hall clerks) and event types (ceremonies, conferences, festivals, exhibitions).
+
+All interaction logs, cash balances, inventory values, and customer-facing responses were recorded in `test_results.csv`.
+
+#### Key Evaluation Metrics:
+| Metric | Benchmark Requirement | Achieved Result | Status |
+| :--- | :--- | :--- | :--- |
+| **Total Inquiries Processed** | 20 sample requests | **20 requests processed** | PASS |
+| **Orders Successfully Fulfilled** | $\ge 3$ fulfilled | **5 orders fulfilled** (Reqs #1, #3, #4, #8, #18) | PASS |
+| **Orders Actively Rejected** | $\ge 1$ rejected with reason | **15 orders rejected** with clear rationales | PASS |
+| **Cash Balance Modifications** | $\ge 3$ balance changes | **7 balance adjustments** | PASS |
+| **Starting Financial Position** | Baseline state (2025-04-01) | Cash: **$44,996.70** \| Inventory: **$4,938.30** | Initialized |
+| **Ending Financial Position** | Post-test state (2025-04-17) | Cash: **$107,923.60** \| Inventory: **$3,645.50** | Verified |
+| **Ending Total Assets** | Cash + Inventory value | **$111,569.10** | Reconciled |
+
+### 2.2 System Strengths Observed in Evaluation
+1. **Strict Delivery Timeline Feasibility**:
+   The multi-agent system demonstrated strong operational discipline. For example, in Request #2, the customer requested delivery by April 15 for items out of stock or not carried (balloons). The Inventory Manager evaluated the supplier lead time and catalog status, allowing the Orchestrator to reject the order with a polite explanation rather than making an unfulfillable commitment.
+2. **Accurate Tiered Volume Discounting**:
+   In Request #1 (200 sheets of A4 glossy paper), the Quoting Agent correctly triggered the 5% bulk discount tier, reducing the price from $40.00 to $38.00 ($0.19/sheet), while keeping standard prices for non-qualifying quantities ($15.00 for cardstock and $10.00 for colored paper), arriving at an exact total of $63.00.
+3. **Ledger Integrity & Real-time Audit**:
+   Every sale and restock order correctly updated the SQLite `transactions` table. As demonstrated by the progression in `test_results.csv`, cash balance increased incrementally with each completed sale and accurately factored in supplier costs.
+4. **Professional Customer-Facing Communication**:
+   All 20 responses in `test_results.csv` maintained a warm, polite, and professional tone. Fulfillments provided clear itemized receipts and confirmed delivery dates, while rejections clearly explained constraints (e.g. stock shortages or supplier lead time mismatches) and suggested earliest feasible dates, strictly withholding sensitive internal margins.
 
 ---
 
