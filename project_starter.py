@@ -126,7 +126,7 @@ def generate_sample_inventory(paper_supplies: list, coverage: float = 0.4, seed:
     # Return inventory as a pandas DataFrame
     return pd.DataFrame(inventory)
 
-def init_database(db_engine: Engine, seed: int = 137) -> Engine:    
+def init_database(db_engine: Engine = db_engine, seed: int = 137) -> Engine:    
     """
     Set up the Munder Difflin database with all required tables and initial records.
 
@@ -588,30 +588,354 @@ def search_quote_history(search_terms: List[str], limit: int = 5) -> List[Dict]:
 ########################
 ########################
 
+from smolagents import OpenAIServerModel, ToolCallingAgent, tool
 
-# Set up and load your env parameters and instantiate your model.
+# Load environment configuration
+dotenv.load_dotenv()
+api_key = os.getenv("UDACITY_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+api_base = os.getenv("OPENAI_BASE_URL", "https://openai.vocareum.com/v1")
 
+if not api_key:
+    print("WARNING: No OpenAI API key found in environment (.env or system env)!")
 
-"""Set up tools for your agents to use, these should be methods that combine the database functions above
- and apply criteria to them to ensure that the flow of the system is correct."""
+# Instantiate OpenAI model via Vocareum proxy
+model = OpenAIServerModel(
+    model_id="gpt-4o-mini",
+    api_base=api_base,
+    api_key=api_key,
+)
 
+# Helper for item catalog normalization
+def normalize_item_name(name: str) -> str:
+    """
+    Resolve natural language item names to canonical catalog names in paper_supplies.
+    """
+    name_clean = name.strip().lower()
+    
+    # 1. Exact catalog match
+    for item in paper_supplies:
+        if item["item_name"].lower() == name_clean:
+            return item["item_name"]
+            
+    # 2. Known alias mappings
+    aliases = {
+        "a4 glossy paper": "Glossy paper",
+        "glossy a4 paper": "Glossy paper",
+        "a4 matte paper": "Matte paper",
+        "matte a4 paper": "Matte paper",
+        "a3 matte paper": "Matte paper",
+        "matte a3 paper": "Matte paper",
+        "a3 glossy paper": "Glossy paper",
+        "heavy cardstock": "Cardstock",
+        "heavyweight cardstock": "Cardstock",
+        "white cardstock": "Cardstock",
+        "colored cardstock": "Cardstock",
+        "colorful cardstock": "Cardstock",
+        "a4 white printer paper": "A4 paper",
+        "a4 printer paper": "A4 paper",
+        "a4 printing paper": "A4 paper",
+        "a4 white paper": "A4 paper",
+        "standard copy paper": "Standard copy paper",
+        "standard printer paper": "Standard copy paper",
+        "standard printing paper": "Standard copy paper",
+        "white printer paper": "Standard copy paper",
+        "printer paper": "Standard copy paper",
+        "printing paper": "Standard copy paper",
+        "a5 colored paper": "Colored paper",
+        "a3 colored paper": "Colored paper",
+        "colorful poster paper": "Poster paper",
+        "poster board": "Large poster paper (24x36 inches)",
+        "poster boards": "Large poster paper (24x36 inches)",
+        "large poster paper": "Large poster paper (24x36 inches)",
+        "washi tape": "Decorative adhesive tape (washi tape)",
+        "decorative washi tape": "Decorative adhesive tape (washi tape)",
+        "decorative adhesive tape": "Decorative adhesive tape (washi tape)",
+        "streamers": "Party streamers",
+        "party streamers": "Party streamers",
+        "table napkins": "Paper napkins",
+        "napkins": "Paper napkins",
+        "paper napkins": "Paper napkins",
+        "paper cups": "Paper cups",
+        "cups": "Paper cups",
+        "paper plates": "Paper plates",
+        "plates": "Paper plates",
+        "envelopes": "Envelopes",
+        "recycled envelopes": "Envelopes",
+        "kraft paper envelopes": "Envelopes",
+        "folders": "Presentation folders",
+        "presentation folders": "Presentation folders",
+        "construction paper": "Construction paper",
+        "colorful construction paper": "Construction paper",
+        "recycled paper": "Recycled paper",
+        "eco-friendly paper": "Eco-friendly paper",
+        "notepads": "Notepads",
+        "invitation cards": "Invitation cards",
+        "flyers": "Flyers",
+        "table covers": "Table covers",
+        "banner paper": "Banner paper",
+        "sticky notes": "Sticky notes",
+    }
+    for alias, target in aliases.items():
+        if alias in name_clean:
+            return target
 
-# Tools for inventory agent
+    # 3. Substring / keyword match in paper_supplies
+    for item in paper_supplies:
+        it_lower = item["item_name"].lower()
+        if it_lower in name_clean or name_clean in it_lower:
+            return item["item_name"]
+            
+    # 4. Token intersection match
+    tokens = set(name_clean.split())
+    for item in paper_supplies:
+        it_tokens = set(item["item_name"].lower().split())
+        if len(tokens.intersection(it_tokens)) >= 2:
+            return item["item_name"]
 
+    return name
 
-# Tools for quoting agent
+# ==============================================================================
+# Agent Tools (Wrapping all 7 Required Starter Functions)
+# ==============================================================================
 
+@tool
+def check_item_stock(item_name: str, as_of_date: str) -> str:
+    """
+    Check current warehouse stock quantity for a specific paper product as of a given date.
 
-# Tools for ordering agent
+    Args:
+        item_name: Name of the paper product to check.
+        as_of_date: The date for checking stock in ISO format (YYYY-MM-DD).
+    """
+    canonical_name = normalize_item_name(item_name)
+    df = get_stock_level(canonical_name, as_of_date)
+    if df.empty:
+        return f"Item '{canonical_name}' has 0 units in stock as of {as_of_date}."
+    stock = int(df.iloc[0]["current_stock"])
+    return f"Current stock for '{canonical_name}' as of {as_of_date} is {stock} units."
 
+@tool
+def get_inventory_snapshot(as_of_date: str) -> str:
+    """
+    Retrieve an inventory snapshot of all products currently in stock in the warehouse.
 
-# Set up your agents and create an orchestration agent that will manage them.
+    Args:
+        as_of_date: The cutoff date in ISO format (YYYY-MM-DD).
+    """
+    inv = get_all_inventory(as_of_date)
+    if not inv:
+        return f"No inventory recorded on or before {as_of_date}."
+    lines = [f"- {item}: {qty} units" for item, qty in sorted(inv.items())]
+    return f"Active warehouse inventory as of {as_of_date}:\n" + "\n".join(lines)
 
+@tool
+def estimate_supplier_delivery(request_date: str, quantity: int) -> str:
+    """
+    Calculate estimated supplier delivery date if restocking is required for an order.
+    Lead times: <=10 units: 0 days; 11-100: 1 day; 101-1000: 4 days; >1000: 7 days.
 
-# Run your test scenarios by writing them here. Make sure to keep track of them.
+    Args:
+        request_date: The order/inquiry date in ISO format (YYYY-MM-DD).
+        quantity: The quantity of items required from the supplier.
+    """
+    est_date = get_supplier_delivery_date(request_date, quantity)
+    return f"For {quantity} units ordered on {request_date}, supplier delivery arrives on {est_date}."
+
+@tool
+def check_company_cash(as_of_date: str) -> str:
+    """
+    Check the company cash balance as of a given date.
+
+    Args:
+        as_of_date: Cutoff date in ISO format (YYYY-MM-DD).
+    """
+    cash = get_cash_balance(as_of_date)
+    return f"Current company cash balance as of {as_of_date} is ${cash:.2f}."
+
+@tool
+def order_supplier_restock(item_name: str, quantity: int, unit_cost: float, order_date: str) -> str:
+    """
+    Place a supplier replenishment order and log it into the transactions ledger.
+
+    Args:
+        item_name: Name of the item to reorder.
+        quantity: Quantity of units to order.
+        unit_cost: Cost per unit from the supplier.
+        order_date: Date of the restock order in ISO format (YYYY-MM-DD).
+    """
+    canonical_name = normalize_item_name(item_name)
+    total_cost = quantity * unit_cost
+    cash = get_cash_balance(order_date)
+    if cash < total_cost:
+        return f"Restock rejected: Insufficient cash balance (${cash:.2f} available, ${total_cost:.2f} required)."
+    tx_id = create_transaction(canonical_name, "stock_orders", quantity, total_cost, order_date)
+    return f"Successfully created supplier stock order #{tx_id} for {quantity} units of '{canonical_name}' totaling ${total_cost:.2f} on {order_date}."
+
+@tool
+def get_company_financial_summary(as_of_date: str) -> str:
+    """
+    Generate a company financial report showing cash, inventory valuation, and assets.
+
+    Args:
+        as_of_date: Cutoff date in ISO format (YYYY-MM-DD).
+    """
+    report = generate_financial_report(as_of_date)
+    return (
+        f"Financial Summary as of {report['as_of_date']}:\n"
+        f"Cash Balance: ${report['cash_balance']:.2f}\n"
+        f"Inventory Valuation: ${report['inventory_value']:.2f}\n"
+        f"Total Assets: ${report['total_assets']:.2f}"
+    )
+
+@tool
+def search_historical_quotes(search_terms_str: str) -> str:
+    """
+    Search historical quotes for past pricing, discounts, and customer responses.
+
+    Args:
+        search_terms_str: Comma-separated search terms (e.g. 'cardstock, event, large').
+    """
+    terms = [t.strip() for t in search_terms_str.split(",") if t.strip()]
+    quotes = search_quote_history(terms, limit=3)
+    if not quotes:
+        return "No historical quotes matched the search criteria."
+    out = []
+    for q in quotes:
+        out.append(
+            f"Quote (${q['total_amount']:.2f}, {q['order_date']}): {q['quote_explanation']} "
+            f"(Context: {q.get('job_type', '')} / {q.get('event_type', '')})"
+        )
+    return "\n---\n".join(out)
+
+@tool
+def calculate_quote_and_discounts(item_name: str, quantity: int, customer_role: str = "", event_type: str = "") -> str:
+    """
+    Calculate customer pricing for an item with tiered volume discounts.
+
+    Args:
+        item_name: The name of the item.
+        quantity: The quantity requested.
+        customer_role: The role/job of the customer (e.g., 'event manager', 'teacher').
+        event_type: The event context (e.g., 'ceremony', 'conference').
+    """
+    canonical_name = normalize_item_name(item_name)
+    unit_price = None
+    for it in paper_supplies:
+        if it["item_name"].lower() == canonical_name.lower():
+            unit_price = it["unit_price"]
+            break
+    if unit_price is None:
+        return f"Item '{item_name}' (matched as '{canonical_name}') is not found in our catalog."
+    
+    # Bulk volume discounts
+    if quantity >= 5000:
+        discount_pct = 0.15
+    elif quantity >= 1000:
+        discount_pct = 0.10
+    elif quantity >= 200:
+        discount_pct = 0.05
+    else:
+        discount_pct = 0.00
+        
+    base_total = quantity * unit_price
+    discount_amount = base_total * discount_pct
+    final_total = round(base_total - discount_amount, 2)
+    effective_unit_price = round(final_total / quantity, 4)
+    
+    return (
+        f"Item: '{canonical_name}' | Qty: {quantity} | Catalog Unit Price: ${unit_price:.2f} | "
+        f"Discount: {int(discount_pct * 100)}% (-${discount_amount:.2f}) | "
+        f"Effective Unit Price: ${effective_unit_price:.4f} | Total Quoted Price: ${final_total:.2f}"
+    )
+
+@tool
+def record_sales_transaction(item_name: str, quantity: int, total_price: float, transaction_date: str) -> str:
+    """
+    Finalize and record a customer sales transaction in the database.
+
+    Args:
+        item_name: Standard name of the item sold.
+        quantity: Number of units sold.
+        total_price: Agreed total sale price.
+        transaction_date: Date of the sale in ISO format (YYYY-MM-DD).
+    """
+    canonical_name = normalize_item_name(item_name)
+    tx_id = create_transaction(canonical_name, "sales", quantity, total_price, transaction_date)
+    new_cash = get_cash_balance(transaction_date)
+    return (
+        f"Sales transaction #{tx_id} recorded for {quantity} units of '{canonical_name}' "
+        f"at ${total_price:.2f} on {transaction_date}. Updated cash balance is ${new_cash:.2f}."
+    )
+
+# ==============================================================================
+# Multi-Agent System Instantiation (4 Agents: Orchestrator + 3 Workers)
+# ==============================================================================
+
+def create_multi_agent_system():
+    """
+    Instantiate the multi-agent system using smolagents.
+    Returns the top-level Orchestrator agent managing Inventory, Quoting, and Sales agents.
+    """
+    inventory_agent = ToolCallingAgent(
+        tools=[
+            check_item_stock,
+            get_inventory_snapshot,
+            estimate_supplier_delivery,
+            check_company_cash,
+            order_supplier_restock,
+            get_company_financial_summary
+        ],
+        model=model,
+        name="inventory_manager",
+        description=(
+            "Manages warehouse inventory stock, checks on-hand stock levels, calculates supplier delivery lead times, "
+            "checks company cash liquidity, and places supplier restock orders if necessary."
+        )
+    )
+
+    quoting_agent = ToolCallingAgent(
+        tools=[
+            search_historical_quotes,
+            calculate_quote_and_discounts
+        ],
+        model=model,
+        name="quoting_agent",
+        description=(
+            "Calculates competitive pricing and volume discounts for paper products and searches historical quotes "
+            "for market rate benchmarking."
+        )
+    )
+
+    sales_agent = ToolCallingAgent(
+        tools=[
+            record_sales_transaction,
+            check_company_cash,
+            get_company_financial_summary
+        ],
+        model=model,
+        name="sales_closer",
+        description=(
+            "Finalizes customer sales transactions in the database, records revenue, and verifies cash ledger balance."
+        )
+    )
+
+    orchestrator = ToolCallingAgent(
+        tools=[
+            get_company_financial_summary
+        ],
+        model=model,
+        managed_agents=[inventory_agent, quoting_agent, sales_agent],
+        name="orchestrator",
+        description="Orchestrates multi-agent customer quote processing, inventory validation, quoting, and sales closing."
+    )
+
+    return orchestrator
+
+# ==============================================================================
+# Test Scenario Runner
+# ==============================================================================
 
 def run_test_scenarios():
-    
     print("Initializing Database...")
     init_database()
     try:
@@ -631,43 +955,56 @@ def run_test_scenarios():
     current_cash = report["cash_balance"]
     current_inventory = report["inventory_value"]
 
-    ############
-    ############
-    ############
-    # INITIALIZE YOUR MULTI AGENT SYSTEM HERE
-    ############
-    ############
-    ############
+    print(f"Initial State ({initial_date}): Cash = ${current_cash:.2f}, Inventory = ${current_inventory:.2f}")
 
     results = []
     for idx, row in quote_requests_sample.iterrows():
         request_date = row["request_date"].strftime("%Y-%m-%d")
 
-        print(f"\n=== Request {idx+1} ===")
-        print(f"Context: {row['job']} organizing {row['event']}")
+        print(f"\n==========================================")
+        print(f"=== Request {idx+1} of {len(quote_requests_sample)} ===")
+        print(f"Context: {row['job']} organizing {row['event']} (Need: {row['need_size']})")
         print(f"Request Date: {request_date}")
-        print(f"Cash Balance: ${current_cash:.2f}")
-        print(f"Inventory Value: ${current_inventory:.2f}")
+        print(f"Current Cash: ${current_cash:.2f} | Current Inventory: ${current_inventory:.2f}")
 
-        # Process request
-        request_with_date = f"{row['request']} (Date of request: {request_date})"
+        # Construct structured instruction for the orchestrator
+        prompt = (
+            f"You are the Sales & Operations Orchestrator for The Beaver's Choice Paper Company.\n"
+            f"Process the following customer inquiry:\n\n"
+            f"CUSTOMER INQUIRY:\n"
+            f"\"{row['request']}\"\n\n"
+            f"METADATA:\n"
+            f"- Request Date: {request_date}\n"
+            f"- Customer Role: {row['job']}\n"
+            f"- Event Type: {row['event']}\n"
+            f"- Order Size Category: {row['need_size']}\n\n"
+            f"EXECUTION PROCEDURE:\n"
+            f"1. Identify all requested items, quantities, and customer's required delivery deadline.\n"
+            f"2. Delegate to 'inventory_manager' to check stock for each item as of {request_date}.\n"
+            f"   - If stock is insufficient, check supplier lead time with estimate_supplier_delivery.\n"
+            f"   - If an item is NOT in our paper catalog, or if supplier delivery date is AFTER the customer's deadline, the order CANNOT be fulfilled as requested.\n"
+            f"3. DECISION:\n"
+            f"   - If CANNOT be fulfilled: Do NOT execute any sale. Synthesize a polite, transparent explanation to the customer explaining the specific constraint (e.g. supplier restock date is after their required delivery date, or item not carried) and propose the earliest feasible date.\n"
+            f"   - If CAN be fulfilled: Delegate to 'quoting_agent' to calculate prices and volume discounts, then delegate to 'sales_closer' to record each sales transaction on {request_date}.\n"
+            f"4. FINAL CUSTOMER RESPONSE:\n"
+            f"   Provide a polite, professional response to the customer summarizing the quote, discounts, total, and delivery schedule (or clear explanation if declining).\n"
+            f"   CRITICAL PRIVACY: Do NOT mention internal wholesale costs, company profit margins, or internal database IDs."
+        )
 
-        ############
-        ############
-        ############
-        # USE YOUR MULTI AGENT SYSTEM TO HANDLE THE REQUEST
-        ############
-        ############
-        ############
-
-        # response = call_your_multi_agent_system(request_with_date)
+        try:
+            # Instantiate fresh agent team for clean per-inquiry state
+            orchestrator = create_multi_agent_system()
+            response = str(orchestrator.run(prompt))
+        except Exception as err:
+            print(f"ERROR executing agent system: {err}")
+            response = f"Thank you for contacting Beaver's Choice Paper Company. We encountered an operational delay reviewing your request for {request_date}. Please contact our sales desk directly."
 
         # Update state
         report = generate_financial_report(request_date)
         current_cash = report["cash_balance"]
         current_inventory = report["inventory_value"]
 
-        print(f"Response: {response}")
+        print(f"\nResponse:\n{response}")
         print(f"Updated Cash: ${current_cash:.2f}")
         print(f"Updated Inventory: ${current_inventory:.2f}")
 
@@ -686,14 +1023,20 @@ def run_test_scenarios():
     # Final report
     final_date = quote_requests_sample["request_date"].max().strftime("%Y-%m-%d")
     final_report = generate_financial_report(final_date)
-    print("\n===== FINAL FINANCIAL REPORT =====")
+    print("\n==========================================")
+    print("===== FINAL FINANCIAL REPORT =====")
+    print(f"Final Date: {final_date}")
     print(f"Final Cash: ${final_report['cash_balance']:.2f}")
     print(f"Final Inventory: ${final_report['inventory_value']:.2f}")
+    print(f"Total Assets: ${final_report['total_assets']:.2f}")
+    print("==========================================")
 
     # Save results
-    pd.DataFrame(results).to_csv("test_results.csv", index=False)
+    results_df = pd.DataFrame(results)
+    results_df.to_csv("test_results.csv", index=False)
+    print(f"Saved {len(results_df)} test results to test_results.csv")
     return results
-
 
 if __name__ == "__main__":
     results = run_test_scenarios()
+
